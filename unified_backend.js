@@ -1,15 +1,17 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
+const axios = require('axios'); // Added for proxying AI endpoints
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: true, credentials: true }));
+const ML_API_URL = process.env.ML_API_URL;
+const ADVISORY_API_URL = process.env.ADVISORY_API_URL;
+
 app.use(express.json());
 
 // MongoDB
@@ -45,14 +47,23 @@ const readingSchema = new mongoose.Schema(
     temperature: { type: Number, required: true },
     humidity: { type: Number, required: true },
     mq2: { type: Number, required: true },
+    rainfall: { type: Number, default: 0 },
+    windSpeed: { type: Number },        // optional
+    pressure: { type: Number },         // optional
+    uvIndex: { type: Number },          // optional
     weatherDescription: { type: String },
     city: String,
     state: String,
     country: String,
+    lat: Number,
+    lon: Number,
   },
   { timestamps: true }
 );
 const Reading = mongoose.model('Reading', readingSchema);
+
+const LocationService = require('./location_service');
+const locationService = new LocationService();
 
 function getWeatherDescription(temp, humidity) {
   if (temp == null || humidity == null) return 'Unknown';
@@ -105,19 +116,34 @@ app.post('/login', async (req, res) => {
 // ESP32 → Cloud ingestion
 app.post('/api/sensor-data', async (req, res) => {
   try {
-    const { temperature, humidity, mq2 } = req.body || {};
+    const { temperature, humidity, mq2, rainfall } = req.body || {};
     if (temperature == null || humidity == null || mq2 == null) {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
+
+    let detected = {
+      city: process.env.LOCATION_CITY || 'Mumbai',
+      state: process.env.LOCATION_STATE || 'Maharashtra',
+      country: process.env.LOCATION_COUNTRY || 'India',
+      lat: parseFloat(process.env.LOCATION_LAT || '19.0760'),
+      lon: parseFloat(process.env.LOCATION_LON || '72.8777'),
+    };
+    try {
+      const auto = await locationService.autoDetectLocation();
+      detected = { ...detected, ...auto };
+    } catch (_) {}
 
     const reading = await Reading.create({
       temperature: Number(temperature),
       humidity: Number(humidity),
       mq2: Number(mq2),
+      rainfall: rainfall != null ? Number(rainfall) : 0,
       weatherDescription: getWeatherDescription(Number(temperature), Number(humidity)),
-      city: process.env.LOCATION_CITY || 'Mumbai',
-      state: process.env.LOCATION_STATE || 'Maharashtra',
-      country: process.env.LOCATION_COUNTRY || 'India',
+      city: detected.city,
+      state: detected.state,
+      country: detected.country,
+      lat: detected.lat,
+      lon: detected.lon,
     });
 
     res.json({ success: true, message: 'Sensor data saved', data: reading });
@@ -169,71 +195,44 @@ app.get('/sensor_data/stats', async (req, res) => {
   }
 });
 
-// AI endpoints (mocked)
+// AI endpoints (proxied)
 app.post('/predict', async (req, res) => {
   try {
-    const mockPredictions = ['rice', 'maize', 'chickpea', 'kidneybeans', 'wheat', 'cotton'];
-    res.json({ prediction: mockPredictions[Math.floor(Math.random() * mockPredictions.length)] });
+    if (!ML_API_URL) return res.status(500).json({ error: 'ML_API_URL not configured' });
+    const r = await axios.post(`${ML_API_URL}/predict`, req.body, { timeout: 15000 });
+    res.json(r.data);
   } catch (e) {
-    res.status(500).json({ error: 'Prediction failed', details: e.message });
+    res.status(e.response?.status || 500).json({ error: 'Prediction failed', details: e.response?.data || e.message });
   }
 });
 
 app.post('/generate_advisory', async (req, res) => {
   try {
-    const { crop_name, temperature, humidity, rainfall, pollution_level } = req.body || {};
-    const advisoryText = `Based on current conditions (Temperature: ${temperature}°C, Humidity: ${humidity}%, Rainfall: ${rainfall}mm), here are recommendations for ${crop_name} cultivation:
-
-1. ${humidity < 50 ? 'Increase irrigation frequency' : 'Maintain current irrigation schedule'}
-2. ${temperature > 30 ? 'Provide shade or cooling measures' : 'Temperature is optimal for growth'}
-3. ${rainfall > 50 ? 'Reduce irrigation to prevent waterlogging' : 'Monitor soil moisture levels'}
-4. Air quality level ${pollution_level} – ${pollution_level > 3 ? 'consider protective measures' : 'conditions are favorable'}`;
-
-    res.json({
-      advisory_text: advisoryText,
-      advisory_image_url: `https://example.com/images/${(crop_name || '').replace(/\s+/g, '_').toLowerCase()}_advisory.png`,
-    });
+    if (!ADVISORY_API_URL) return res.status(500).json({ error: 'ADVISORY_API_URL not configured' });
+    const r = await axios.post(`${ADVISORY_API_URL}/generate_advisory`, req.body, { timeout: 30000 });
+    res.json(r.data);
   } catch (e) {
-    res.status(500).json({ error: 'Advisory generation failed', details: e.message });
+    res.status(e.response?.status || 500).json({ error: 'Advisory generation failed', details: e.response?.data || e.message });
   }
 });
 
 app.post('/get_educational_videos', async (req, res) => {
   try {
-    const { crop_name, temperature, humidity, rainfall, growth_stage } = req.body || {};
-    res.json({
-      success: true,
-      videos: [
-        { title: `${crop_name || 'Crop'} Farming Guide`, description: `Complete guide for ${crop_name || 'crop'} in ${growth_stage || 'vegetative'} stage`, category: 'Crop Care', search_terms: `${crop_name || 'agriculture'} ${growth_stage || 'farming'} guide`, relevance_reason: `Based on ${temperature}°C & ${humidity}%` },
-        { title: 'Smart Irrigation Techniques', description: 'Efficient watering methods', category: 'Irrigation', search_terms: 'smart irrigation agriculture', relevance_reason: 'Optimize water usage' },
-        { title: 'Pest and Disease Management', description: 'Protect crops from pests', category: 'Pest Control', search_terms: `${crop_name || 'crop'} pest control ${growth_stage || 'farming'}`, relevance_reason: 'Preventive measures' },
-        { title: 'Weather Monitoring for Farmers', description: 'Weather patterns and impact', category: 'Weather Monitoring', search_terms: 'weather monitoring farming', relevance_reason: 'Crop planning' },
-      ],
-    });
+    if (!ADVISORY_API_URL) return res.status(500).json({ error: 'ADVISORY_API_URL not configured' });
+    const r = await axios.post(`${ADVISORY_API_URL}/get_educational_videos`, req.body, { timeout: 30000 });
+    res.json(r.data);
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to get educational videos', details: e.message });
+    res.status(e.response?.status || 500).json({ error: 'Failed to get educational videos', details: e.response?.data || e.message });
   }
 });
 
 app.post('/crop_care_advice', async (req, res) => {
   try {
-    const { crop_name, temperature, humidity, rainfall, mq2, growth_stage } = req.body || {};
-    res.json({
-      success: true,
-      advice: {
-        crop: crop_name || 'General Crop',
-        growthStage: growth_stage || 'vegetative',
-        immediateActions: [
-          `Monitor ${crop_name || 'crop'} in ${growth_stage || 'vegetative'} stage`,
-          `Check soil moisture (humidity: ${humidity}%)`,
-          `Observe for pest signs (Air quality: ${mq2 ?? 'N/A'})`,
-          `Adjust irrigation (rainfall: ${rainfall ?? 0}mm)`,
-        ],
-        aiRecommendations: `Given ${temperature}°C, ${humidity}% humidity, ${rainfall}mm rainfall, and air quality ${mq2 ?? 'N/A'}, follow regular monitoring and timely interventions.`,
-      },
-    });
+    if (!ADVISORY_API_URL) return res.status(500).json({ error: 'ADVISORY_API_URL not configured' });
+    const r = await axios.post(`${ADVISORY_API_URL}/crop_care_advice`, req.body, { timeout: 30000 });
+    res.json(r.data);
   } catch (e) {
-    res.status(500).json({ success: false, error: 'Failed to get crop care advice', details: e.message });
+    res.status(e.response?.status || 500).json({ error: 'Failed to get crop care advice', details: e.response?.data || e.message });
   }
 });
 
