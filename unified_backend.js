@@ -158,7 +158,6 @@ app.post('/predict', async (req, res) => {
     const { temperature, humidity, rainfall } = req.body;
     
     // For deployment, we'll use a mock prediction since we can't run Python on Render
-    // In production, you'd deploy the Python ML API separately
     const mockPredictions = ['rice', 'maize', 'chickpea', 'kidneybeans', 'wheat', 'cotton'];
     const randomPrediction = mockPredictions[Math.floor(Math.random() * mockPredictions.length)];
     
@@ -273,35 +272,6 @@ app.post('/crop_care_advice', async (req, res) => {
     });
   }
 });
-
-// ===== ESP32 DATA COLLECTION (for local development) =====
-async function fetchAndStoreSensorData() {
-  try {
-    const esp32IP = process.env.ESP32_IP || '192.168.1.100';
-    const esp32URL = `http://${esp32IP}:3000/sensordata`;
-    
-    console.log(`🔄 Fetching data from ESP32: ${esp32URL}`);
-    
-    const response = await axios.get(esp32URL, { timeout: 5000 });
-    const { temperature, humidity, mq2 } = response.data;
-
-    if (temperature == null || humidity == null || mq2 == null) {
-      throw new Error('Invalid sensor data received');
-    }
-
-    await aiWeatherService.updateSensorDataWithWeather({
-      temperature,
-      humidity,
-      mq2
-    });
-    
-  } catch (error) {
-    console.error('❌ Error fetching or saving sensor data:', error.message);
-    if (error.code === 'ECONNREFUSED') {
-      console.error('   ESP32 not reachable. Check IP address and WiFi connection.');
-    }
-  }
-}
 
 // ===== HEALTH CHECK AND ROOT ENDPOINTS =====
 app.get('/health', (req, res) => {
