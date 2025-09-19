@@ -193,6 +193,38 @@ app.post('/api/sensor-data', async (req, res) => {
       wx = { rainfall: Number(rainfall ?? 0) };
     }
 
+    // GenAI weather description via Advisory API (short summary)
+    // requires ADVISORY_API_URL to be set
+    let aiWeatherDesc = getWeatherDescription(Number(temperature), Number(humidity)); // fallback
+    try {
+      if (ADVISORY_API_URL) {
+        const promptPayload = {
+          crop_name: 'general',
+          temperature: Number(temperature),
+          humidity: Number(humidity),
+          rainfall: Number(wx.rainfall ?? 0),
+          pollution_level:  _getPollutionLevelLocal(Number(mq2)), // simple helper below
+          language: 'en',
+          // optional: pass location context so GenAI can mention it
+          location: { city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon },
+          mode: 'weather_summary' // your advisory server can branch on this flag
+        };
+        const ai = await axios.post(`${ADVISORY_API_URL}/generate_advisory`, promptPayload, { timeout: 15000 });
+        // If your advisory returns { advisory_text }, reuse it as weatherDescription
+        if (ai.data && ai.data.advisory_text) aiWeatherDesc = String(ai.data.advisory_text);
+      }
+    } catch (_) {
+      // keep fallback on failures
+    }
+
+    function _getPollutionLevelLocal(mq2) {
+      if (!Number.isFinite(mq2)) return 1;
+      if (mq2 < 200) return 1;
+      if (mq2 < 500) return 2;
+      if (mq2 < 800) return 3;
+      return 4;
+    }
+
     const reading = await Reading.create({
       temperature: Number(temperature),
       humidity: Number(humidity),
@@ -201,7 +233,7 @@ app.post('/api/sensor-data', async (req, res) => {
       windSpeed: wx.windSpeed,
       pressure: wx.pressure,
       uvIndex: wx.uvIndex,
-      weatherDescription: getWeatherDescription(Number(temperature), Number(humidity)),
+      weatherDescription: aiWeatherDesc, // <-- use GenAI text
       city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon,
     });
 
