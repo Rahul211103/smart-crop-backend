@@ -75,8 +75,6 @@ function getWeatherDescription(temp, humidity) {
   return 'Pleasant';
 }
 
-function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
-
 // Auth endpoints
 app.post('/register', async (req, res) => {
   const { username, password, email } = req.body || {};
@@ -123,37 +121,80 @@ app.post('/api/sensor-data', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
 
-    // use client IP (Render sets x-forwarded-for)
+    // Get client IP (Render proxy adds x-forwarded-for)
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
 
-    let detected = {
+    // Prefer lat/lon sent by ESP32; else derive from IP; else use env defaults
+    const lat = req.body?.lat;
+    const lon = req.body?.lon;
+
+    let loc = {
       city: process.env.LOCATION_CITY || 'Bengaluru',
       state: process.env.LOCATION_STATE || 'Karnataka',
       country: process.env.LOCATION_COUNTRY || 'India',
-      lat: parseFloat(process.env.LOCATION_LAT || '12.9716'),
-      lon: parseFloat(process.env.LOCATION_LON || '77.5946'),
+      lat: lat ?? parseFloat(process.env.LOCATION_LAT || '12.9716'),
+      lon: lon ?? parseFloat(process.env.LOCATION_LON || '77.5946'),
     };
 
-    if (clientIp) {
+    // If no lat/lon in payload, try IP → lat/lon via your location_service
+    if (lat == null || lon == null) {
       try {
-        const auto = await locationService.geoLocateIP(clientIp);
-        detected = { ...detected, ...auto };
+        const ipLoc = await locationService.geoLocateIP(clientIp);
+        if (ipLoc?.lat && ipLoc?.lon) loc = { ...loc, ...ipLoc };
       } catch (_) {}
     }
 
+    // Reverse geocode with OpenStreetMap Nominatim for accurate city/state/country
+    try {
+      const nom = await axios.get(
+        'https://nominatim.openstreetmap.org/reverse',
+        { params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 10, addressdetails: 1 },
+          headers: { 'User-Agent': 'smart-crop-advisor/1.0' } }
+      );
+      const a = nom.data?.address || {};
+      loc.city = a.city || a.town || a.village || loc.city;
+      loc.state = a.state || loc.state;
+      loc.country = a.country || loc.country;
+    } catch (_) {}
+
+    // Optional: fetch weather to refill rainfall/wind/pressure/uv for your dashboard
+    let wx = {};
+    try {
+      const wxr = await axios.get('https://api.open-meteo.com/v1/forecast', {
+        params: {
+          latitude: loc.lat, longitude: loc.lon,
+          current: 'temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,uv_index',
+          daily: 'precipitation_sum',
+          timezone: 'auto'
+        }
+      });
+      const cur = wxr.data?.current || {};
+      const daily = wxr.data?.daily || {};
+      wx = {
+        windSpeed: cur.wind_speed_10m,
+        pressure: cur.pressure_msl,
+        uvIndex: cur.uv_index,
+        rainfall: (daily.precipitation_sum && daily.precipitation_sum[0]) || req.body?.rainfall || 0
+      };
+    } catch (_) {}
+
+    // Save reading (use wx values to populate dashboard fields)
     const reading = await Reading.create({
-      temperature: num(temperature, null),
-      humidity: num(humidity, null),
-      mq2: num(mq2, null),
-      rainfall: num(rainfall, 0),
-      weatherDescription: getWeatherDescription(num(temperature, null), num(humidity, null)),
-      city: detected.city, state: detected.state, country: detected.country,
-      lat: detected.lat, lon: detected.lon,
+      temperature: Number(req.body.temperature),
+      humidity: Number(req.body.humidity),
+      mq2: Number(req.body.mq2),
+      rainfall: Number(wx.rainfall ?? 0),
+      windSpeed: Number(wx.windSpeed ?? 0),
+      pressure: Number(wx.pressure ?? 0),
+      uvIndex: Number(wx.uvIndex ?? 0),
+      weatherDescription: getWeatherDescription(Number(req.body.temperature), Number(req.body.humidity)),
+      city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon,
     });
 
     res.json({ success: true, message: 'Sensor data saved', data: reading });
   } catch (e) {
+    console.error('Error saving ESP32 data:', e);
     res.status(500).json({ success: false, message: 'Error processing sensor data', error: e.message });
   }
 });
