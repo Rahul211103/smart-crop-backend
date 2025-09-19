@@ -116,80 +116,87 @@ app.post('/login', async (req, res) => {
 // ESP32 → Cloud ingestion
 app.post('/api/sensor-data', async (req, res) => {
   try {
-    const { temperature, humidity, mq2, rainfall } = req.body || {};
+    const { temperature, humidity, mq2, rainfall, lat: bodyLat, lon: bodyLon } = req.body || {};
     if (temperature == null || humidity == null || mq2 == null) {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
 
-    // Get client IP (Render proxy adds x-forwarded-for)
-    const fwd = req.headers['x-forwarded-for'];
-    const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
-
-    // Prefer lat/lon sent by ESP32; else derive from IP; else use env defaults
-    const lat = req.body?.lat;
-    const lon = req.body?.lon;
-
+    // 1) establish defaults (Bengaluru as sane fallback)
     let loc = {
       city: process.env.LOCATION_CITY || 'Bengaluru',
       state: process.env.LOCATION_STATE || 'Karnataka',
       country: process.env.LOCATION_COUNTRY || 'India',
-      lat: lat ?? parseFloat(process.env.LOCATION_LAT || '12.9716'),
-      lon: lon ?? parseFloat(process.env.LOCATION_LON || '77.5946'),
+      lat: parseFloat(process.env.LOCATION_LAT) || 12.9716,
+      lon: parseFloat(process.env.LOCATION_LON) || 77.5946,
     };
 
-    // If no lat/lon in payload, try IP → lat/lon via your location_service
-    if (lat == null || lon == null) {
+    // 2) prefer device lat/lon if ESP32 sends them
+    if (bodyLat != null && bodyLon != null) {
+      loc.lat = parseFloat(bodyLat);
+      loc.lon = parseFloat(bodyLon);
+    } else {
+      // 3) otherwise derive lat/lon from client IP
+      const fwd = req.headers['x-forwarded-for'];
+      const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
       try {
-        const ipLoc = await locationService.geoLocateIP(clientIp);
-        if (ipLoc?.lat && ipLoc?.lon) loc = { ...loc, ...ipLoc };
+        // ip → lat/lon (choose one free provider)
+        // ipapi.co is simple; no key needed for light usage
+        const ipr = await axios.get(`https://ipapi.co/${clientIp}/json/`, { timeout: 5000 });
+        if (ipr.data && ipr.data.latitude && ipr.data.longitude) {
+          loc.lat = parseFloat(ipr.data.latitude);
+          loc.lon = parseFloat(ipr.data.longitude);
+        }
       } catch (_) {}
     }
 
-    // Reverse geocode with OpenStreetMap Nominatim for accurate city/state/country
+    // 4) reverse-geocode lat/lon via OpenStreetMap Nominatim
     try {
-      const nom = await axios.get(
-        'https://nominatim.openstreetmap.org/reverse',
-        { params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 10, addressdetails: 1 },
-          headers: { 'User-Agent': 'smart-crop-advisor/1.0' } }
-      );
+      const nom = await axios.get('https://nominatim.openstreetmap.org/reverse', {
+        params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 10, addressdetails: 1 },
+        headers: { 'User-Agent': 'smart-crop-advisor/1.0 (contact@example.com)' },
+        timeout: 6000,
+      });
       const a = nom.data?.address || {};
       loc.city = a.city || a.town || a.village || loc.city;
       loc.state = a.state || loc.state;
       loc.country = a.country || loc.country;
     } catch (_) {}
 
-    // Optional: fetch weather to refill rainfall/wind/pressure/uv for your dashboard
+    // 5) optionally enrich weather (Open‑Meteo)
     let wx = {};
     try {
-      const wxr = await axios.get('https://api.open-meteo.com/v1/forecast', {
+      const w = await axios.get('https://api.open-meteo.com/v1/forecast', {
         params: {
-          latitude: loc.lat, longitude: loc.lon,
-          current: 'temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,uv_index',
+          latitude: loc.lat, longitude: loc.lon, timezone: 'auto',
+          current: 'wind_speed_10m,pressure_msl,uv_index',
           daily: 'precipitation_sum',
-          timezone: 'auto'
-        }
+        },
+        timeout: 6000,
       });
-      const cur = wxr.data?.current || {};
-      const daily = wxr.data?.daily || {};
+      const cur = w.data?.current || {};
+      const daily = w.data?.daily || {};
       wx = {
-        windSpeed: cur.wind_speed_10m,
-        pressure: cur.pressure_msl,
-        uvIndex: cur.uv_index,
-        rainfall: (daily.precipitation_sum && daily.precipitation_sum[0]) || req.body?.rainfall || 0
+        windSpeed: parseFloat(cur.wind_speed_10m) || 0,
+        pressure: parseFloat(cur.pressure_msl) || 0,
+        uvIndex: parseFloat(cur.uv_index) || 0,
+        rainfall: parseFloat(daily?.precipitation_sum?.[0]) || parseFloat(rainfall) || 0,
       };
-    } catch (_) {}
+    } catch (_) {
+      wx = { rainfall: parseFloat(rainfall) || 0 };
+    }
 
-    // Save reading (use wx values to populate dashboard fields)
+    // 6) save
     const reading = await Reading.create({
-      temperature: Number(req.body.temperature),
-      humidity: Number(req.body.humidity),
-      mq2: Number(req.body.mq2),
-      rainfall: Number(wx.rainfall ?? 0),
-      windSpeed: Number(wx.windSpeed ?? 0),
-      pressure: Number(wx.pressure ?? 0),
-      uvIndex: Number(wx.uvIndex ?? 0),
-      weatherDescription: getWeatherDescription(Number(req.body.temperature), Number(req.body.humidity)),
-      city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon,
+      temperature: parseFloat(temperature),
+      humidity: parseFloat(humidity),
+      mq2: parseFloat(mq2),
+      rainfall: wx.rainfall,
+      windSpeed: wx.windSpeed,
+      pressure: wx.pressure,
+      uvIndex: wx.uvIndex,
+      weatherDescription: getWeatherDescription(parseFloat(temperature), parseFloat(humidity)),
+      city: loc.city, state: loc.state, country: loc.country,
+      lat: loc.lat, lon: loc.lon,
     });
 
     res.json({ success: true, message: 'Sensor data saved', data: reading });
