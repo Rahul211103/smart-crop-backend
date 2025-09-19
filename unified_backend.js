@@ -62,17 +62,18 @@ const readingSchema = new mongoose.Schema(
 );
 const Reading = mongoose.model('Reading', readingSchema);
 
+// Replace SCRS_LOCATIONS with cities/towns
 const SCRS_LOCATIONS = [
-  { id: 'rajanukunte', name: 'Rajanukunte', lat: 13.2017, lon: 77.5940 },
-  { id: 'doddaballapura', name: 'Doddaballapura', lat: 13.2947, lon: 77.5430 },
-  { id: 'yelahanka', name: 'Yelahanka', lat: 13.1007, lon: 77.5963 },
-  { id: 'hebbal', name: 'Hebbal', lat: 13.0358, lon: 77.5970 },
-  { id: 'hsr', name: 'HSR Layout', lat: 12.9121, lon: 77.6446 },
-  { id: 'indiranagar', name: 'Indiranagar', lat: 12.9719, lon: 77.6412 },
-  { id: 'marathahalli', name: 'Marathahalli', lat: 12.9569, lon: 77.7011 },
-  { id: 'whitefield', name: 'Whitefield', lat: 12.9698, lon: 77.7499 },
-  { id: 'electronic_city', name: 'Electronic City', lat: 12.8390, lon: 77.6770 },
-  { id: 'btm', name: 'BTM Layout', lat: 12.9155, lon: 77.6101 },
+  { id: 'bengaluru',   name: 'Bengaluru',   lat: 12.9716, lon: 77.5946 },
+  { id: 'tumakuru',    name: 'Tumakuru',    lat: 13.3409, lon: 77.1010 },
+  { id: 'mysuru',      name: 'Mysuru',      lat: 12.2958, lon: 76.6394 },
+  { id: 'hassan',      name: 'Hassan',      lat: 13.0072, lon: 76.0967 },
+  { id: 'mangaluru',   name: 'Mangaluru',   lat: 12.9141, lon: 74.8560 },
+  { id: 'hubballi',    name: 'Hubballi',    lat: 15.3647, lon: 75.1240 },
+  { id: 'belagavi',    name: 'Belagavi',    lat: 15.8497, lon: 74.4977 },
+  { id: 'shivamogga',  name: 'Shivamogga',  lat: 13.9299, lon: 75.5681 },
+  { id: 'ballari',     name: 'Ballari',     lat: 15.1394, lon: 76.9214 },
+  { id: 'davanagere',  name: 'Davanagere',  lat: 14.4669, lon: 75.9238 },
 ];
 
 // One-document settings collection (global override for now)
@@ -323,6 +324,37 @@ app.post('/crop_care_advice', async (req, res) => {
     res.json(r.data);
   } catch (e) {
     res.status(e.response?.status || 500).json({ error: 'Failed to get crop care advice', details: e.response?.data || e.message });
+  }
+});
+
+// Add below your AI proxies
+app.get('/scrs/weather_summary', async (req, res) => {
+  try {
+    const lang = (req.query.language || 'en').toString();
+    const latest = await Reading.findOne().sort({ createdAt: -1 }).lean();
+    if (!latest) return res.status(404).json({ success: false, message: 'No sensor data found' });
+
+    // Prefer real numbers already saved on Reading
+    const payload = {
+      city: latest.city, state: latest.state, country: latest.country,
+      lat: latest.lat, lon: latest.lon,
+      temperature: latest.temperature,
+      humidity: latest.humidity,
+      rainfall: latest.rainfall ?? 0,
+      windSpeed: latest.windSpeed ?? 0,
+      pressure: latest.pressure ?? 0,
+      uvIndex: latest.uvIndex ?? 0,
+      language: lang,
+    };
+
+    let text = 'Weather summary unavailable.';
+    if (ADVISORY_API_URL) {
+      const r = await axios.post(`${ADVISORY_API_URL}/summarize_weather`, payload, { timeout: 15000 });
+      if (r.data?.text) text = String(r.data.text);
+    }
+    return res.json({ success: true, text });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to summarize weather', error: e.message });
   }
 });
 
