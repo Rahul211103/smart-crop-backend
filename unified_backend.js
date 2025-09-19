@@ -75,6 +75,8 @@ function getWeatherDescription(temp, humidity) {
   return 'Pleasant';
 }
 
+function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
 // Auth endpoints
 app.post('/register', async (req, res) => {
   const { username, password, email } = req.body || {};
@@ -121,8 +123,10 @@ app.post('/api/sensor-data', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
 
+    // use client IP (Render sets x-forwarded-for)
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
+
     let detected = {
       city: process.env.LOCATION_CITY || 'Bengaluru',
       state: process.env.LOCATION_STATE || 'Karnataka',
@@ -130,29 +134,26 @@ app.post('/api/sensor-data', async (req, res) => {
       lat: parseFloat(process.env.LOCATION_LAT || '12.9716'),
       lon: parseFloat(process.env.LOCATION_LON || '77.5946'),
     };
-    try {
-      if (clientIp) {
+
+    if (clientIp) {
+      try {
         const auto = await locationService.geoLocateIP(clientIp);
         detected = { ...detected, ...auto };
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     const reading = await Reading.create({
-      temperature: Number(temperature),
-      humidity: Number(humidity),
-      mq2: Number(mq2),
-      rainfall: rainfall != null ? Number(rainfall) : 0,
-      weatherDescription: getWeatherDescription(Number(temperature), Number(humidity)),
-      city: detected.city,
-      state: detected.state,
-      country: detected.country,
-      lat: detected.lat,
-      lon: detected.lon,
+      temperature: num(temperature, null),
+      humidity: num(humidity, null),
+      mq2: num(mq2, null),
+      rainfall: num(rainfall, 0),
+      weatherDescription: getWeatherDescription(num(temperature, null), num(humidity, null)),
+      city: detected.city, state: detected.state, country: detected.country,
+      lat: detected.lat, lon: detected.lon,
     });
 
     res.json({ success: true, message: 'Sensor data saved', data: reading });
   } catch (e) {
-    console.error('Error saving ESP32 data:', e);
     res.status(500).json({ success: false, message: 'Error processing sensor data', error: e.message });
   }
 });
