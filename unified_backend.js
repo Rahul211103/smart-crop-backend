@@ -5,7 +5,6 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
-const SimpleWeatherService = require('./simple_weather_service');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -13,6 +12,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
+// MongoDB
 mongoose
   .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB connected for unified backend'))
@@ -21,6 +21,7 @@ mongoose
     process.exit(1);
   });
 
+// Sessions
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'demo_secret_key_for_final_year_project',
@@ -31,10 +32,7 @@ app.use(
   })
 );
 
-// Services
-const weatherService = new SimpleWeatherService();
-
-// Models
+// Schemas
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -42,7 +40,31 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
-// Auth
+const readingSchema = new mongoose.Schema(
+  {
+    temperature: { type: Number, required: true },
+    humidity: { type: Number, required: true },
+    mq2: { type: Number, required: true },
+    weatherDescription: { type: String },
+    city: String,
+    state: String,
+    country: String,
+  },
+  { timestamps: true }
+);
+const Reading = mongoose.model('Reading', readingSchema);
+
+function getWeatherDescription(temp, humidity) {
+  if (temp == null || humidity == null) return 'Unknown';
+  if (temp < 15) return 'Cold';
+  if (temp < 25) return 'Cool';
+  if (temp < 35) return 'Warm';
+  if (humidity > 80) return 'Humid';
+  if (humidity < 30) return 'Dry';
+  return 'Pleasant';
+}
+
+// Auth endpoints
 app.post('/register', async (req, res) => {
   const { username, password, email } = req.body || {};
   if (!username || !password || !email) return res.status(400).json({ message: 'Username, password, and email required' });
@@ -80,7 +102,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// ESP32 data ingress (cloud-friendly)
+// ESP32 → Cloud ingestion
 app.post('/api/sensor-data', async (req, res) => {
   try {
     const { temperature, humidity, mq2 } = req.body || {};
@@ -88,12 +110,19 @@ app.post('/api/sensor-data', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
 
-    const weatherData = await weatherService.updateSensorDataWithWeather({ temperature, humidity, mq2 });
-    console.log('📊 Received ESP32 data:', { temperature, humidity, mq2 });
+    const reading = await Reading.create({
+      temperature: Number(temperature),
+      humidity: Number(humidity),
+      mq2: Number(mq2),
+      weatherDescription: getWeatherDescription(Number(temperature), Number(humidity)),
+      city: process.env.LOCATION_CITY || 'Mumbai',
+      state: process.env.LOCATION_STATE || 'Maharashtra',
+      country: process.env.LOCATION_COUNTRY || 'India',
+    });
 
-    res.json({ success: true, message: 'Sensor data received and processed', data: weatherData });
+    res.json({ success: true, message: 'Sensor data saved', data: reading });
   } catch (e) {
-    console.error('❌ Error processing ESP32 data:', e.message);
+    console.error('Error saving ESP32 data:', e);
     res.status(500).json({ success: false, message: 'Error processing sensor data', error: e.message });
   }
 });
@@ -102,12 +131,12 @@ app.get('/api/esp32/status', (req, res) => {
   res.json({ status: 'OK', message: 'Smart Crop Backend is running', timestamp: new Date().toISOString() });
 });
 
-// Sensor data APIs
+// Sensor data read endpoints (DB only)
 app.get('/sensor_data/latest', async (req, res) => {
   try {
-    const data = await weatherService.getWeatherHistory(1);
-    if (!data?.length) return res.status(404).json({ success: false, message: 'No sensor data found' });
-    res.json({ success: true, data: data[0] });
+    const latest = await Reading.findOne().sort({ createdAt: -1 }).lean();
+    if (!latest) return res.status(404).json({ success: false, message: 'No sensor data found' });
+    res.json({ success: true, data: latest });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Error fetching latest sensor data', error: e.message });
   }
@@ -115,7 +144,7 @@ app.get('/sensor_data/latest', async (req, res) => {
 
 app.get('/sensor_data', async (req, res) => {
   try {
-    const data = await weatherService.getWeatherHistory(50);
+    const data = await Reading.find().sort({ createdAt: -1 }).limit(50).lean();
     res.json({ success: true, count: data.length, data });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Error fetching sensor data', error: e.message });
@@ -124,14 +153,23 @@ app.get('/sensor_data', async (req, res) => {
 
 app.get('/sensor_data/stats', async (req, res) => {
   try {
-    const stats = await weatherService.getWeatherStats();
-    res.json({ success: true, stats });
+    const [stats] = await Reading.aggregate([
+      { $group: { _id: null, avgTemperature: { $avg: '$temperature' }, avgHumidity: { $avg: '$humidity' }, totalReadings: { $sum: 1 } } },
+    ]);
+    res.json({
+      success: true,
+      stats: {
+        avgTemperature: stats?.avgTemperature ?? 0,
+        avgHumidity: stats?.avgHumidity ?? 0,
+        totalReadings: stats?.totalReadings ?? 0,
+      },
+    });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Error fetching sensor statistics', error: e.message });
   }
 });
 
-// AI endpoints (mocked for cloud)
+// AI endpoints (mocked)
 app.post('/predict', async (req, res) => {
   try {
     const mockPredictions = ['rice', 'maize', 'chickpea', 'kidneybeans', 'wheat', 'cotton'];
@@ -151,7 +189,10 @@ app.post('/generate_advisory', async (req, res) => {
 3. ${rainfall > 50 ? 'Reduce irrigation to prevent waterlogging' : 'Monitor soil moisture levels'}
 4. Air quality level ${pollution_level} – ${pollution_level > 3 ? 'consider protective measures' : 'conditions are favorable'}`;
 
-    res.json({ advisory_text: advisoryText, advisory_image_url: `https://example.com/images/${(crop_name || '').replace(/\\s+/g, '_').toLowerCase()}_advisory.png` });
+    res.json({
+      advisory_text: advisoryText,
+      advisory_image_url: `https://example.com/images/${(crop_name || '').replace(/\s+/g, '_').toLowerCase()}_advisory.png`,
+    });
   } catch (e) {
     res.status(500).json({ error: 'Advisory generation failed', details: e.message });
   }
@@ -222,8 +263,7 @@ app.get('/', (req, res) =>
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Unified Smart Crop Backend running on http://localhost:${PORT}`);
   console.log('📊 All endpoints available on single server');
-  console.log('🌍 Using Simple Weather Service for sensor data');
-  console.log('📡 ESP32 can send data to: /api/sensor-data');
+  console.log('🗃️ Using only ESP32 readings persisted in MongoDB');
   console.log(`📍 Location: ${process.env.LOCATION_CITY || 'Mumbai'}, ${process.env.LOCATION_COUNTRY || 'India'}`);
 });
 
