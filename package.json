@@ -1,0 +1,25 @@
+{
+  "name": "smart-crop-backend",
+  "version": "1.0.0",
+  "description": "Smart Crop Recommendation System Backend",
+  "main": "unified_backend.js",
+  "scripts": {
+    "start": "node unified_backend.js",
+    "dev": "nodemon unified_backend.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "axios": "^1.6.0",
+    "mongoose": "^8.0.0",
+    "bcryptjs": "^2.4.3",
+    "express-session": "^1.17.3",
+    "connect-mongo": "^5.0.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
