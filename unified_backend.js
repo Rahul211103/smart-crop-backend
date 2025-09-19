@@ -62,8 +62,38 @@ const readingSchema = new mongoose.Schema(
 );
 const Reading = mongoose.model('Reading', readingSchema);
 
-const LocationService = require('./location_service');
-const locationService = new LocationService();
+const SCRS_LOCATIONS = [
+  { id: 'rajanukunte', name: 'Rajanukunte', lat: 13.2017, lon: 77.5940 },
+  { id: 'doddaballapura', name: 'Doddaballapura', lat: 13.2947, lon: 77.5430 },
+  { id: 'yelahanka', name: 'Yelahanka', lat: 13.1007, lon: 77.5963 },
+  { id: 'hebbal', name: 'Hebbal', lat: 13.0358, lon: 77.5970 },
+  { id: 'hsr', name: 'HSR Layout', lat: 12.9121, lon: 77.6446 },
+  { id: 'indiranagar', name: 'Indiranagar', lat: 12.9719, lon: 77.6412 },
+  { id: 'marathahalli', name: 'Marathahalli', lat: 12.9569, lon: 77.7011 },
+  { id: 'whitefield', name: 'Whitefield', lat: 12.9698, lon: 77.7499 },
+  { id: 'electronic_city', name: 'Electronic City', lat: 12.8390, lon: 77.6770 },
+  { id: 'btm', name: 'BTM Layout', lat: 12.9155, lon: 77.6101 },
+];
+
+// One-document settings collection (global override for now)
+const settingsSchema = new mongoose.Schema({ selectedLocationId: String }, { timestamps: true });
+const Settings = mongoose.model('Settings', settingsSchema);
+
+// Get list
+app.get('/scrs/locations', (req, res) => res.json({ success: true, locations: SCRS_LOCATIONS }));
+
+// Set selected location
+app.post('/scrs/override_location', async (req, res) => {
+  try {
+    const { locationId } = req.body || {};
+    const exists = SCRS_LOCATIONS.find(x => x.id === locationId);
+    if (!exists) return res.status(400).json({ success: false, message: 'Invalid locationId' });
+    await Settings.updateOne({}, { selectedLocationId: locationId }, { upsert: true });
+    res.json({ success: true, message: 'Location override set', location: exists });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Failed to set override', error: e.message });
+  }
+});
 
 function getWeatherDescription(temp, humidity) {
   if (temp == null || humidity == null) return 'Unknown';
@@ -116,43 +146,21 @@ app.post('/login', async (req, res) => {
 // ESP32 → Cloud ingestion
 app.post('/api/sensor-data', async (req, res) => {
   try {
-    const { temperature, humidity, mq2, rainfall, lat: bodyLat, lon: bodyLon } = req.body || {};
-    if (temperature == null || humidity == null || mq2 == null) {
+    const { temperature, humidity, mq2, rainfall } = req.body || {};
+    if (temperature == null || humidity == null || mq2 == null)
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
-    }
 
-    // 1) establish defaults (Bengaluru as sane fallback)
-    let loc = {
-      city: process.env.LOCATION_CITY || 'Bengaluru',
-      state: process.env.LOCATION_STATE || 'Karnataka',
-      country: process.env.LOCATION_COUNTRY || 'India',
-      lat: parseFloat(process.env.LOCATION_LAT) || 12.9716,
-      lon: parseFloat(process.env.LOCATION_LON) || 77.5946,
-    };
+    // Get current override
+    const s = await Settings.findOne().lean();
+    const chosen = s && SCRS_LOCATIONS.find(x => x.id === s.selectedLocationId);
+    let loc = chosen
+      ? { city: chosen.name, state: 'Karnataka', country: 'India', lat: chosen.lat, lon: chosen.lon }
+      : { city: 'Bengaluru', state: 'Karnataka', country: 'India', lat: 12.9716, lon: 77.5946 };
 
-    // 2) prefer device lat/lon if ESP32 sends them
-    if (bodyLat != null && bodyLon != null) {
-      loc.lat = parseFloat(bodyLat);
-      loc.lon = parseFloat(bodyLon);
-    } else {
-      // 3) otherwise derive lat/lon from client IP
-      const fwd = req.headers['x-forwarded-for'];
-      const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
-      try {
-        // ip → lat/lon (choose one free provider)
-        // ipapi.co is simple; no key needed for light usage
-        const ipr = await axios.get(`https://ipapi.co/${clientIp}/json/`, { timeout: 5000 });
-        if (ipr.data && ipr.data.latitude && ipr.data.longitude) {
-          loc.lat = parseFloat(ipr.data.latitude);
-          loc.lon = parseFloat(ipr.data.longitude);
-        }
-      } catch (_) {}
-    }
-
-    // 4) reverse-geocode lat/lon via OpenStreetMap Nominatim
+    // Reverse geocode with OSM Nominatim for standardized naming (optional but nice)
     try {
       const nom = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-        params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 10, addressdetails: 1 },
+        params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 12, addressdetails: 1 },
         headers: { 'User-Agent': 'smart-crop-advisor/1.0 (contact@example.com)' },
         timeout: 6000,
       });
@@ -162,7 +170,7 @@ app.post('/api/sensor-data', async (req, res) => {
       loc.country = a.country || loc.country;
     } catch (_) {}
 
-    // 5) optionally enrich weather (Open‑Meteo)
+    // Weather enrichment (Open-Meteo)
     let wx = {};
     try {
       const w = await axios.get('https://api.open-meteo.com/v1/forecast', {
@@ -176,32 +184,29 @@ app.post('/api/sensor-data', async (req, res) => {
       const cur = w.data?.current || {};
       const daily = w.data?.daily || {};
       wx = {
-        windSpeed: parseFloat(cur.wind_speed_10m) || 0,
-        pressure: parseFloat(cur.pressure_msl) || 0,
-        uvIndex: parseFloat(cur.uv_index) || 0,
-        rainfall: parseFloat(daily?.precipitation_sum?.[0]) || parseFloat(rainfall) || 0,
+        windSpeed: Number(cur.wind_speed_10m || 0),
+        pressure: Number(cur.pressure_msl || 0),
+        uvIndex: Number(cur.uv_index || 0),
+        rainfall: Number((daily?.precipitation_sum?.[0] ?? rainfall ?? 0)),
       };
     } catch (_) {
-      wx = { rainfall: parseFloat(rainfall) || 0 };
+      wx = { rainfall: Number(rainfall ?? 0) };
     }
 
-    // 6) save
     const reading = await Reading.create({
-      temperature: parseFloat(temperature),
-      humidity: parseFloat(humidity),
-      mq2: parseFloat(mq2),
+      temperature: Number(temperature),
+      humidity: Number(humidity),
+      mq2: Number(mq2),
       rainfall: wx.rainfall,
       windSpeed: wx.windSpeed,
       pressure: wx.pressure,
       uvIndex: wx.uvIndex,
-      weatherDescription: getWeatherDescription(parseFloat(temperature), parseFloat(humidity)),
-      city: loc.city, state: loc.state, country: loc.country,
-      lat: loc.lat, lon: loc.lon,
+      weatherDescription: getWeatherDescription(Number(temperature), Number(humidity)),
+      city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon,
     });
 
     res.json({ success: true, message: 'Sensor data saved', data: reading });
   } catch (e) {
-    console.error('Error saving ESP32 data:', e);
     res.status(500).json({ success: false, message: 'Error processing sensor data', error: e.message });
   }
 });
