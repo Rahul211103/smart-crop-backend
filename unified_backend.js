@@ -121,16 +121,20 @@ app.post('/api/sensor-data', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing required sensor data' });
     }
 
+    const fwd = req.headers['x-forwarded-for'];
+    const clientIp = Array.isArray(fwd) ? fwd[0] : (fwd || req.ip || '');
     let detected = {
-      city: process.env.LOCATION_CITY || 'Mumbai',
-      state: process.env.LOCATION_STATE || 'Maharashtra',
+      city: process.env.LOCATION_CITY || 'Bengaluru',
+      state: process.env.LOCATION_STATE || 'Karnataka',
       country: process.env.LOCATION_COUNTRY || 'India',
-      lat: parseFloat(process.env.LOCATION_LAT || '19.0760'),
-      lon: parseFloat(process.env.LOCATION_LON || '72.8777'),
+      lat: parseFloat(process.env.LOCATION_LAT || '12.9716'),
+      lon: parseFloat(process.env.LOCATION_LON || '77.5946'),
     };
     try {
-      const auto = await locationService.autoDetectLocation();
-      detected = { ...detected, ...auto };
+      if (clientIp) {
+        const auto = await locationService.geoLocateIP(clientIp);
+        detected = { ...detected, ...auto };
+      }
     } catch (_) {}
 
     const reading = await Reading.create({
