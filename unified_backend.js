@@ -6,7 +6,7 @@ const axios = require('axios');
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
-const AIWeatherService = require('./ai_weather_service');
+const SimpleWeatherService = require('./simple_weather_service');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,8 +39,8 @@ app.use(session({
   }
 }));
 
-// Initialize AI weather service
-const aiWeatherService = new AIWeatherService();
+// Initialize simple weather service
+const weatherService = new SimpleWeatherService();
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -96,10 +96,57 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// ===== ESP32 DATA COLLECTION ENDPOINTS =====
+// ESP32 can send data directly to this endpoint
+app.post('/api/sensor-data', async (req, res) => {
+  try {
+    const { temperature, humidity, mq2 } = req.body;
+    
+    // Validate data
+    if (temperature == null || humidity == null || mq2 == null) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required sensor data' 
+      });
+    }
+
+    // Generate weather data and store
+    const weatherData = await weatherService.updateSensorDataWithWeather({
+      temperature,
+      humidity,
+      mq2
+    });
+
+    console.log('📊 Received ESP32 data:', { temperature, humidity, mq2 });
+    
+    res.json({
+      success: true,
+      message: 'Sensor data received and processed',
+      data: weatherData
+    });
+  } catch (error) {
+    console.error('❌ Error processing ESP32 data:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error processing sensor data',
+      error: error.message
+    });
+  }
+});
+
+// Endpoint for ESP32 to check if server is alive
+app.get('/api/esp32/status', (req, res) => {
+  res.json({
+    status: 'OK',
+    message: 'Smart Crop Backend is running',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ===== SENSOR DATA ENDPOINTS =====
 app.get('/sensor_data/latest', async (req, res) => {
   try {
-    const data = await aiWeatherService.getWeatherHistory(1);
+    const data = await weatherService.getWeatherHistory(1);
     if (!data || data.length === 0) {
       return res.status(404).json({ 
         success: false, 
@@ -121,7 +168,7 @@ app.get('/sensor_data/latest', async (req, res) => {
 
 app.get('/sensor_data', async (req, res) => {
   try {
-    const data = await aiWeatherService.getWeatherHistory(50);
+    const data = await weatherService.getWeatherHistory(50);
     res.json({
       success: true,
       count: data.length,
@@ -138,7 +185,7 @@ app.get('/sensor_data', async (req, res) => {
 
 app.get('/sensor_data/stats', async (req, res) => {
   try {
-    const stats = await aiWeatherService.getWeatherStats();
+    const stats = await weatherService.getWeatherStats();
     res.json({
       success: true,
       stats: stats
@@ -158,6 +205,7 @@ app.post('/predict', async (req, res) => {
     const { temperature, humidity, rainfall } = req.body;
     
     // For deployment, we'll use a mock prediction since we can't run Python on Render
+    // In production, you'd deploy the Python ML API separately
     const mockPredictions = ['rice', 'maize', 'chickpea', 'kidneybeans', 'wheat', 'cotton'];
     const randomPrediction = mockPredictions[Math.floor(Math.random() * mockPredictions.length)];
     
@@ -290,6 +338,8 @@ app.get('/', (req, res) => {
       'POST /register': 'User registration',
       'POST /login': 'User login',
       'GET /sensor_data/latest': 'Get latest sensor data',
+      'POST /api/sensor-data': 'ESP32 sensor data endpoint',
+      'GET /api/esp32/status': 'ESP32 status check',
       'POST /predict': 'Get crop recommendation',
       'POST /generate_advisory': 'Get farming advisory',
       'POST /get_educational_videos': 'Get AI-recommended videos',
@@ -303,19 +353,9 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Unified Smart Crop Backend running on http://localhost:${PORT}`);
   console.log(`📊 All endpoints available on single server`);
-  console.log(`🌍 Using AI Weather Service for sensor data`);
-  
-  // Only fetch ESP32 data in development (not on Render)
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`🔗 ESP32 URL: http://${process.env.ESP32_IP || '192.168.1.100'}:3000/sensordata`);
-    console.log(`⏱️  Data collection interval: 1 second`);
-    
-    // Fetch data immediately on startup
-    fetchAndStoreSensorData();
-    
-    // Then fetch every 1 second (1000 milliseconds)
-    setInterval(fetchAndStoreSensorData, 1000);
-  }
+  console.log(`🌍 Using Simple Weather Service for sensor data`);
+  console.log(`📡 ESP32 can send data to: /api/sensor-data`);
+  console.log(`📍 Location: ${process.env.LOCATION_CITY || 'Mumbai'}, ${process.env.LOCATION_COUNTRY || 'India'}`);
 });
 
 // Graceful shutdown
