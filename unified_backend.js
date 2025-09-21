@@ -106,26 +106,43 @@ function getWeatherDescription(temp, humidity) {
   return 'Pleasant';
 }
 
-// Auth endpoints
 app.post('/register', async (req, res) => {
   const { username, password, email } = req.body || {};
-  if (!username || !password || !email) return res.status(400).json({ message: 'Username, password, and email required' });
+  
+  console.log('=== REGISTER DEBUG ===');
+  console.log('Received username:', username);
+  console.log('Received email:', email);
+  console.log('Received password length:', password ? password.length : 'undefined');
+  
+  if (!username || !password || !email) {
+    console.log('Missing required fields');
+    return res.status(400).json({ message: 'Username, password, and email required' });
+  }
 
   try {
     const exists = await User.findOne({ username });
-    if (exists) return res.status(409).json({ message: 'Username already exists' });
+    console.log('User already exists:', exists ? 'Yes' : 'No');
+    
+    if (exists) {
+      console.log('Username already exists');
+      return res.status(409).json({ message: 'Username already exists' });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
-    await new User({ username, password: hashed, email }).save();
+    console.log('Password hashed, length:', hashed.length);
+    
+    const newUser = await new User({ username, password: hashed, email }).save();
+    console.log('User created successfully:', newUser.username);
+    
     res.status(201).json({ message: 'User registered successfully' });
   } catch (e) {
     console.error('Register error:', e);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
-
 app.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
+  
   console.log('=== LOGIN DEBUG ===');
   console.log('Received username:', username);
   console.log('Received password length:', password ? password.length : 'undefined');
@@ -139,7 +156,8 @@ app.post('/login', async (req, res) => {
     const user = await User.findOne({ username });
     console.log('User found:', user ? 'Yes' : 'No');
     if (user) {
-      console.log('Stored password hash:', user.password);
+      console.log('Stored username:', user.username);
+      console.log('Stored password hash length:', user.password ? user.password.length : 'undefined');
     }
     
     if (!user) {
