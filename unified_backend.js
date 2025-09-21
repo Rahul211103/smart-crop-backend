@@ -126,17 +126,38 @@ app.post('/register', async (req, res) => {
 
 app.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ message: 'Username and password required' });
+  console.log('=== LOGIN DEBUG ===');
+  console.log('Received username:', username);
+  console.log('Received password length:', password ? password.length : 'undefined');
+  
+  if (!username || !password) {
+    console.log('Missing username or password');
+    return res.status(400).json({ message: 'Username and password required' });
+  }
 
   try {
     const user = await User.findOne({ username });
-    if (!user) return res.status(401).json({ message: 'Invalid username or password' });
+    console.log('User found:', user ? 'Yes' : 'No');
+    if (user) {
+      console.log('Stored password hash:', user.password);
+    }
+    
+    if (!user) {
+      console.log('User not found in database');
+      return res.status(401).json({ message: 'Invalid username or password' });
+    }
 
     const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ message: 'Invalid username or password' });
+    console.log('Password comparison result:', valid);
+    
+    if (!valid) {
+      console.log('Password comparison failed');
+      return res.status(401).json({ message: 'Invalid username or password' });
+    }
 
     req.session.userId = user._id;
     req.session.username = user.username;
+    console.log('Login successful for user:', user.username);
     res.json({ message: 'Login successful' });
   } catch (e) {
     console.error('Login error:', e);
