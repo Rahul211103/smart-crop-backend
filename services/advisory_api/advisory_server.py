@@ -390,6 +390,17 @@ def get_growth_stages(crop_name):
         ]
         return jsonify({"success": True, "stages": fallback_stages})
 
+@app.route('/chatbot', methods=['POST'])
+def chatbot():
+    data = request.get_json() or {}
+    message = data.get('message', '')
+    user_id = data.get('user_id')   # Optional for context
+
+    prompt = f"Farmer question: {message}\nGive a helpful, clear answer."
+    response = generate_ai_response(prompt)
+    return jsonify({"reply": response})
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5003))
     app.run(host='0.0.0.0', port=port, debug=False)
