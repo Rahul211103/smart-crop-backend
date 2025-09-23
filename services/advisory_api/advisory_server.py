@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import google.generativeai as genai
+from flask import make_response
 
 # Load environment variables
 load_dotenv()
@@ -13,6 +14,15 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+@app.before_request
+def before_request():
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+        return response
+    
 # Configure Gemini AI
 api_key = os.getenv('GOOGLE_GENAI_API_KEY')
 if not api_key:
