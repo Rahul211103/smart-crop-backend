@@ -405,32 +405,25 @@ def chatbot():
     try:
         data = request.get_json()
         message = data.get('message', '')
-        user_id = data.get('user_id', 'user123')
-        language = data.get('language', 'en')  # Get language parameter
+        language = data.get('language', 'en')
         
-        # Add language instruction to the prompt
-        language_instruction = ""
+        # Simple response based on language
         if language == 'hi':
-            language_instruction = "Please respond in Hindi."
+            response = f"आपका संदेश: {message}\n\nमैं कृषि सलाहकार हूँ। आप कैसे मदद कर सकता हूँ?"
         elif language == 'kn':
-            language_instruction = "Please respond in Kannada."
+            response = f"ನಿಮ್ಮ ಸಂದೇಶ: {message}\n\nನಾನು ಕೃಷಿ ಸಲಹೆಗಾರ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?"
         elif language == 'te':
-            language_instruction = "Please respond in Telugu."
+            response = f"మీ సందేశం: {message}\n\nనేను వ్యవసాయ సలహాదారుడిని. నేను మీకు ఎలా సహాయం చేయగలను?"
         elif language == 'ta':
-            language_instruction = "Please respond in Tamil."
+            response = f"உங்கள் செய்தி: {message}\n\nநான் விவசாய ஆலோசகர். நான் உங்களுக்கு எப்படி உதவ முடியும்?"
         else:
-            language_instruction = "Please respond in English."
-        
-        # Modify your prompt to include language instruction
-        prompt = f"{language_instruction}\n\nUser: {message}\nAssistant:"
-        
-        # Your existing chatbot logic here...
+            response = f"Your message: {message}\n\nI'm a farming advisor. How can I help you?"
         
         return jsonify({
             'success': True,
-            'reply': response_text,
-            'language': language
+            'reply': response
         })
+        
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
