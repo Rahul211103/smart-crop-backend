@@ -184,102 +184,34 @@ app.post('/login', async (req, res) => {
 });
 
 // ESP32 → Cloud ingestion
+// Update the sensor data endpoint to remove weather API calls:
 app.post('/api/sensor-data', async (req, res) => {
   try {
-    const { temperature, humidity, mq2, rainfall } = req.body || {};
-    if (temperature == null || humidity == null || mq2 == null)
-      return res.status(400).json({ success: false, message: 'Missing required sensor data' });
-
-    // Get current override
-    const s = await Settings.findOne().lean();
-    const chosen = s && SCRS_LOCATIONS.find(x => x.id === s.selectedLocationId);
-    let loc = chosen
-      ? { city: chosen.name, state: 'Karnataka', country: 'India', lat: chosen.lat, lon: chosen.lon }
-      : { city: 'Bengaluru', state: 'Karnataka', country: 'India', lat: 12.9716, lon: 77.5946 };
-
-    // Reverse geocode with OSM Nominatim for standardized naming (optional but nice)
-    try {
-      const nom = await axios.get('https://nominatim.openstreetmap.org/reverse', {
-        params: { format: 'json', lat: loc.lat, lon: loc.lon, zoom: 12, addressdetails: 1 },
-        headers: { 'User-Agent': 'smart-crop-advisor/1.0 (contact@example.com)' },
-        timeout: 6000,
-      });
-      const a = nom.data?.address || {};
-      loc.city = a.city || a.town || a.village || loc.city;
-      loc.state = a.state || loc.state;
-      loc.country = a.country || loc.country;
-    } catch (_) {}
-
-    // Weather enrichment (Open-Meteo)
-    let wx = {};
-    try {
-      const w = await axios.get('https://api.open-meteo.com/v1/forecast', {
-        params: {
-          latitude: loc.lat, longitude: loc.lon, timezone: 'auto',
-          current: 'wind_speed_10m,pressure_msl,uv_index',
-          daily: 'precipitation_sum',
-        },
-        timeout: 6000,
-      });
-      const cur = w.data?.current || {};
-      const daily = w.data?.daily || {};
-      wx = {
-        windSpeed: Number(cur.wind_speed_10m || 0),
-        pressure: Number(cur.pressure_msl || 0),
-        uvIndex: Number(cur.uv_index || 0),
-        rainfall: Number((daily?.precipitation_sum?.[0] ?? rainfall ?? 0)),
-      };
-    } catch (_) {
-      wx = { rainfall: Number(rainfall ?? 0) };
-    }
-
-    // GenAI weather description via Advisory API (short summary)
-    // requires ADVISORY_API_URL to be set
-    let aiWeatherDesc = getWeatherDescription(Number(temperature), Number(humidity)); // fallback
-    try {
-      if (ADVISORY_API_URL) {
-        const promptPayload = {
-          crop_name: 'general',
-          temperature: Number(temperature),
-          humidity: Number(humidity),
-          rainfall: Number(wx.rainfall ?? 0),
-          pollution_level:  _getPollutionLevelLocal(Number(mq2)), // simple helper below
-          language: 'en',
-          // optional: pass location context so GenAI can mention it
-          location: { city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon },
-          mode: 'weather_summary' // your advisory server can branch on this flag
-        };
-        const ai = await axios.post(`${ADVISORY_API_URL}/generate_advisory`, promptPayload, { timeout: 15000 });
-        // If your advisory returns { advisory_text }, reuse it as weatherDescription
-        if (ai.data && ai.data.advisory_text) aiWeatherDesc = String(ai.data.advisory_text);
-      }
-    } catch (_) {
-      // keep fallback on failures
-    }
-
-    function _getPollutionLevelLocal(mq2) {
-      if (!Number.isFinite(mq2)) return 1;
-      if (mq2 < 200) return 1;
-      if (mq2 < 500) return 2;
-      if (mq2 < 800) return 3;
-      return 4;
-    }
-
-    const reading = await Reading.create({
-      temperature: Number(temperature),
-      humidity: Number(humidity),
-      mq2: Number(mq2),
-      rainfall: wx.rainfall,
-      windSpeed: wx.windSpeed,
-      pressure: wx.pressure,
-      uvIndex: wx.uvIndex,
-      weatherDescription: aiWeatherDesc, // <-- use GenAI text
-      city: loc.city, state: loc.state, country: loc.country, lat: loc.lat, lon: loc.lon,
+    const sensorData = req.body;
+    
+    // Remove weather API call and just save sensor data
+    const newSensorData = new SensorData({
+      temperature: sensorData.temperature,
+      humidity: sensorData.humidity,
+      mq2: sensorData.mq2,
+      rainfall: sensorData.rainfall || 0, // Use sensor data, not weather API
+      soilMoisture: sensorData.soilMoisture || 0,
+      lightLevel: sensorData.lightLevel || 0,
+      airQuality: sensorData.airQuality || 1,
+      weatherDescription: sensorData.weatherDescription || 'Normal',
+      timestamp: new Date()
     });
 
-    res.json({ success: true, message: 'Sensor data saved', data: reading });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Error processing sensor data', error: e.message });
+    await newSensorData.save();
+    
+    res.json({
+      success: true,
+      message: 'Sensor data saved',
+      data: newSensorData
+    });
+  } catch (error) {
+    console.error('Error saving sensor data:', error);
+    res.status(500).json({ error: 'Failed to save sensor data' });
   }
 });
 
@@ -369,33 +301,12 @@ app.post('/crop_care_advice', async (req, res) => {
 // Add below your AI proxies
 app.get('/scrs/weather_summary', async (req, res) => {
   try {
-    const lang = (req.query.language || 'en').toString();
-    const latest = await Reading.findOne().sort({ createdAt: -1 }).lean();
-    if (!latest) return res.status(404).json({ success: false, message: 'No sensor data found' });
-
-    // Prefer real numbers already saved on Reading
-    const payload = {
-      city: latest.city, state: latest.state, country: latest.country,
-      lat: latest.lat, lon: latest.lon,
-      temperature: latest.temperature,
-      humidity: latest.humidity,
-      rainfall: latest.rainfall ?? 0,
-      windSpeed: latest.windSpeed ?? 0,
-      pressure: latest.pressure ?? 0,
-      uvIndex: latest.uvIndex ?? 0,
-      language: lang,
-    };
-
-    let text = 'Weather summary unavailable.';
-    if (ADVISORY_API_URL) {
-      const r = await axios.post(`${ADVISORY_API_URL}/summarize_weather`, payload, { timeout: 15000 });
-      if (r.data?.text) text = String(r.data.text);
-    }
-    return res.json({ success: true, text });
+    res.json({ success: true, text: "Weather summary generation is currently disabled." });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to summarize weather', error: e.message });
+    res.status(500).json({ success: false, message: 'Failed to handle request', error: e.message });
   }
 });
+
 
 // Health & root
 app.get('/health', (req, res) => res.json({ status: 'OK', message: 'Unified Smart Crop Backend Server', timestamp: new Date().toISOString() }));
