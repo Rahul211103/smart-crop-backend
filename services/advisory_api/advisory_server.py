@@ -402,13 +402,37 @@ def get_growth_stages(crop_name):
 
 @app.route('/chatbot', methods=['POST'])
 def chatbot():
-    data = request.get_json() or {}
-    message = data.get('message', '')
-    user_id = data.get('user_id')   # Optional for context
-
-    prompt = f"Farmer question: {message}\nGive a helpful, clear answer."
-    response = generate_ai_response(prompt)
-    return jsonify({"reply": response})
+    try:
+        data = request.get_json()
+        message = data.get('message', '')
+        user_id = data.get('user_id', 'user123')
+        language = data.get('language', 'en')  # Get language parameter
+        
+        # Add language instruction to the prompt
+        language_instruction = ""
+        if language == 'hi':
+            language_instruction = "Please respond in Hindi."
+        elif language == 'kn':
+            language_instruction = "Please respond in Kannada."
+        elif language == 'te':
+            language_instruction = "Please respond in Telugu."
+        elif language == 'ta':
+            language_instruction = "Please respond in Tamil."
+        else:
+            language_instruction = "Please respond in English."
+        
+        # Modify your prompt to include language instruction
+        prompt = f"{language_instruction}\n\nUser: {message}\nAssistant:"
+        
+        # Your existing chatbot logic here...
+        
+        return jsonify({
+            'success': True,
+            'reply': response_text,
+            'language': language
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 
