@@ -43,7 +43,7 @@ def clean_markdown(md: str) -> str:
     md = re.sub(r'\n{3,}', '\n\n', md)             # Collapse extra blank lines
     return md.strip()
 
-def generate_ai_response(prompt: str, model_name: str = 'gemini-2.0-flash-exp') -> str:
+def generate_ai_response(prompt: str, model_name: str = 'gemini-2.0-flash') -> str:
     try:
         model = genai.GenerativeModel(model_name=model_name)
         response = model.generate_content(prompt)
@@ -863,4 +863,5 @@ if __name__ == '__main__':
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5003))
     app.run(host='0.0.0.0', port=port, debug=False)
+
 
