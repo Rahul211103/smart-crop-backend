@@ -55,7 +55,7 @@ def clean_markdown(md: str) -> str:
 # ------------------------------
 # AI Response Generator
 # ------------------------------
-def generate_ai_response(prompt: str, model_name: str = "gemini-2.0-flash"):
+def generate_ai_response(prompt: str, model_name: str = "gemini-2.0"):
     try:
         model = genai.GenerativeModel(model_name=model_name)
         response = model.generate_content(prompt)
@@ -300,4 +300,5 @@ Give a practical, helpful farming answer.
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5003))
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
