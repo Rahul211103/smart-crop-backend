@@ -55,7 +55,7 @@ def clean_markdown(md: str) -> str:
 # ------------------------------
 # AI Response Generator
 # ------------------------------
-def generate_ai_response(prompt: str, model_name: str = "gemini-1.5-flash"):
+def generate_ai_response(prompt: str, model_name: str = "gemini-2.0-flash"):
     try:
         model = genai.GenerativeModel(model_name=model_name)
         response = model.generate_content(prompt)
